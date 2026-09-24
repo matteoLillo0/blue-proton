@@ -1,0 +1,13 @@
+# Build
+build/
+edge/build/
+compile_commands.json
+
+# Output generato a runtime
+status.json
+status.json.tmp
+
+# Editor
+.vscode/
+.idea/
+.cache/
