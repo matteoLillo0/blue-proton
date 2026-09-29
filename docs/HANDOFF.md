@@ -6,7 +6,9 @@ implementando **una** interfaccia, senza toccare il resto. Dati e regole: `docs/
 
 ## Compilare e lanciare
 
-Serve solo CMake ≥ 3.16 e un compilatore C++17. Nessuna libreria esterna.
+Serve solo CMake ≥ 3.16 e un compilatore C++17. **OpenCV è opzionale** (4.x o 5.x, moduli
+core/imgproc/videoio): se CMake la trova si abilita la lettura da file video (`--video`),
+altrimenti tutto il resto compila e funziona uguale. Per escluderla: `-DBP_WITH_OPENCV=OFF`.
 
 ```sh
 cmake -S edge -B edge/build
@@ -29,12 +31,22 @@ Risoluzione e fps sono *richieste*: la camera sceglie i valori supportati più v
 programma stampa quelli effettivi. Formati e risoluzioni: `v4l2-ctl -d /dev/video0 --list-formats-ext`.
 Con poca luce molte webcam abbassano da sole gli fps (esposizione più lunga).
 
+**File video (richiede OpenCV).**
+
+```sh
+./edge/build/blue_proton_edge --video mucche.mp4             # alla velocità del video, come una camera
+./edge/build/blue_proton_edge --video mucche.mp4 --no-pace   # il più veloce possibile: benchmark
+```
+
+A fine video il programma esce e stampa frame totali e fps medi. `timestamp_s` è il tempo
+*nel video* (frame / fps), così il tracker vede gli intervalli veri anche con `--no-pace`.
+
 ## Dove si innesta ogni pezzo
 
 | Pezzo vero | Interfaccia da implementare | Pezzo finto da sostituire |
 |---|---|---|
 | Camera | `FrameSource` (`frame_source.hpp`) | ✅ `V4l2CameraSource` (`--camera`) |
-| File video | `FrameSource` (`frame_source.hpp`) | da fare |
+| File video | `FrameSource` (`frame_source.hpp`) | ✅ `OpenCvVideoSource` (`--video`) |
 | Modello YOLO | `IDetector` (`detector.hpp`) | `FakeDetector` |
 | Tracker | `ITracker` (`tracker.hpp`) | `NullTracker` |
 | Invio al server | `StatusWriter` (`status_writer.hpp`) | `JsonStatusWriter` (resta valido) |
@@ -59,8 +71,9 @@ conta le box del frame. Col tracker vero andrà contato il numero di animali uni
   nessuna dipendenza). Le camere che danno solo MJPEG/H.264 (alcune USB, molte IP) richiedono
   un decoder: libjpeg-turbo, OpenCV o GStreamer. Le camere CSI delle schede (Jetson, Raspberry)
   di solito passano da GStreamer/libcamera: da verificare sulla scheda finale.
-- File video: serve un decoder (OpenCV `cv::VideoCapture` o FFmpeg). Da decidere insieme al
-  detector, che per resize/letterbox potrebbe voler usare OpenCV comunque.
+- OpenCV è entrata come dipendenza opzionale (solo per `--video`). Se il detector la usa per
+  resize/letterbox diventa obbligatoria: in quel caso togliere l'opzione in `CMakeLists.txt`.
+  `--video` accetta anche URL (es. `rtsp://`) via `cv::VideoCapture`: utile per camere IP, non testato.
 - Modello: dimensione d'ingresso, formato del tensore (NHWC/NCHW, float/uint8), soglie NMS.
 - Conteggio definitivo e campi aggiuntivi di `status.json` (incrementare `schema_version`).
 - Misure di FPS e memoria sulla scheda finale.

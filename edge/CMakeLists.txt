@@ -22,6 +22,22 @@ add_library(bp_edge STATIC
 target_include_directories(bp_edge PUBLIC include)
 target_compile_options(bp_edge PRIVATE -Wall -Wextra -Wpedantic)
 
+# OpenCV e' OPZIONALE: se c'e' si compila anche la sorgente da file video (--video),
+# altrimenti tutto il resto funziona uguale. Per disattivarla: -DBP_WITH_OPENCV=OFF
+option(BP_WITH_OPENCV "Sorgente da file video con OpenCV" ON)
+if(BP_WITH_OPENCV)
+  find_package(OpenCV QUIET COMPONENTS core imgproc videoio)
+endif()
+if(OpenCV_FOUND)
+  message(STATUS "OpenCV ${OpenCV_VERSION}: sorgente video attiva")
+  target_sources(bp_edge PRIVATE src/opencv_video_source.cpp)
+  target_link_libraries(bp_edge PRIVATE ${OpenCV_LIBS})
+  target_include_directories(bp_edge SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+  target_compile_definitions(bp_edge PUBLIC BP_HAVE_OPENCV)
+else()
+  message(STATUS "OpenCV non trovato: niente sorgente video (--video)")
+endif()
+
 add_executable(blue_proton_edge src/main.cpp)
 target_link_libraries(blue_proton_edge PRIVATE bp_edge)
 target_compile_options(blue_proton_edge PRIVATE -Wall -Wextra -Wpedantic)

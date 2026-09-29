@@ -9,6 +9,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 
 #include "bp/fake_detector.hpp"
@@ -16,6 +17,9 @@
 #include "bp/json_status_writer.hpp"
 #include "bp/null_tracker.hpp"
 #include "bp/v4l2_camera_source.hpp"
+#ifdef BP_HAVE_OPENCV
+#include "bp/opencv_video_source.hpp"
+#endif
 
 namespace {
 
@@ -30,6 +34,8 @@ struct Options {
     std::string status_file = "status.json";
     double max_seconds = 0.0;  // 0 = senza limite
     std::string camera;        // vuoto = sorgente finta
+    std::string video;         // file video (richiede OpenCV)
+    bool pace = true;          // video alla sua velocita' reale
     int width = 640;
     int height = 480;
     double fps = 10.0;
@@ -41,6 +47,8 @@ void print_usage(const char* prog) {
               << "  --status-file <path>   dove scrivere status.json (default: status.json)\n"
               << "  --max-seconds <s>      esce dopo <s> secondi (default: mai)\n"
               << "  --camera <device>      usa una camera V4L2, es. /dev/video0 (default: sorgente finta)\n"
+              << "  --video <file>         legge un file video (serve build con OpenCV)\n"
+              << "  --no-pace              con --video: il piu' veloce possibile invece che a velocita' reale\n"
               << "  --width <px> --height <px> --fps <n>   richiesta alla sorgente (default: 640x480 @ 10)\n"
               << "  --save-frame <file.ppm>                salva il primo frame per controllarlo a occhio\n";
 }
@@ -54,6 +62,10 @@ bool parse_args(int argc, char** argv, Options& opt) {
             opt.status_file = argv[++i];
         } else if (arg == "--camera" && has_value) {
             opt.camera = argv[++i];
+        } else if (arg == "--video" && has_value) {
+            opt.video = argv[++i];
+        } else if (arg == "--no-pace") {
+            opt.pace = false;
         } else if (arg == "--save-frame" && has_value) {
             opt.save_frame = argv[++i];
         } else if ((arg == "--max-seconds" || arg == "--width" || arg == "--height" || arg == "--fps") && has_value) {
@@ -78,7 +90,8 @@ bool parse_args(int argc, char** argv, Options& opt) {
             return false;
         }
     }
-    return true;
+    // Una sola sorgente alla volta.
+    return opt.camera.empty() || opt.video.empty();
 }
 
 // PPM (P6): il formato immagine piu' semplice che esista, si apre con qualunque visualizzatore.
@@ -95,6 +108,16 @@ bool save_ppm(const bp::Frame& frame, const std::string& path) {
 }
 
 std::unique_ptr<bp::FrameSource> make_source(const Options& opt) {
+    if (!opt.video.empty()) {
+#ifdef BP_HAVE_OPENCV
+        auto vid = std::make_unique<bp::OpenCvVideoSource>(opt.video, opt.pace);
+        std::cout << "Video " << opt.video << ": " << vid->width() << 'x' << vid->height() << " @ " << vid->fps()
+                  << " fps" << (opt.pace ? "" : " (senza pacing)") << '\n';
+        return vid;
+#else
+        throw std::runtime_error("--video richiede una build con OpenCV (vedi docs/HANDOFF.md)");
+#endif
+    }
     if (opt.camera.empty()) {
         return std::make_unique<bp::FakeFrameSource>(opt.fps, opt.width, opt.height);
     }
@@ -140,6 +163,7 @@ int main(int argc, char** argv) {
     const auto start = Clock::now();
     auto window_start = start;
     int frames_in_window = 0;
+    long frames_total = 0;
     int last_count = 0;
     bp::Frame frame;  // fuori dal loop: il buffer dei pixel viene riusato
 
@@ -161,6 +185,7 @@ int main(int argc, char** argv) {
         // (animali unici) arrivera' con il tracker.
         last_count = static_cast<int>(tracks.size());
         ++frames_in_window;
+        ++frames_total;
 
         const auto now = Clock::now();
         const double window_s = std::chrono::duration<double>(now - window_start).count();
@@ -182,6 +207,10 @@ int main(int argc, char** argv) {
             }
         }
     }
+
+    const double total_s = std::chrono::duration<double>(Clock::now() - start).count();
+    std::cout << std::fixed << std::setprecision(1) << "Totale: " << frames_total << " frame in " << total_s
+              << " s (fps medi " << (total_s > 0.0 ? frames_total / total_s : 0.0) << ")\n";
 
     // Nessuna pulizia manuale: i unique_ptr distruggono tutto uscendo da main.
     std::cout << "Chiusura pulita.\n";
