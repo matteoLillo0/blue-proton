@@ -16,6 +16,7 @@ add_library(bp_edge STATIC
   src/fake_frame_source.cpp
   src/fake_detector.cpp
   src/null_tracker.cpp
+  src/iou_tracker.cpp
   src/json_status_writer.cpp
   src/v4l2_camera_source.cpp   # solo Linux (V4L2)
 )
@@ -41,3 +42,10 @@ endif()
 add_executable(blue_proton_edge src/main.cpp)
 target_link_libraries(blue_proton_edge PRIVATE bp_edge)
 target_compile_options(blue_proton_edge PRIVATE -Wall -Wextra -Wpedantic)
+
+# Test: ctest --test-dir edge/build --output-on-failure
+enable_testing()
+add_executable(test_tracker tests/test_tracker.cpp)
+target_link_libraries(test_tracker PRIVATE bp_edge)
+target_compile_options(test_tracker PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME tracker COMMAND test_tracker)

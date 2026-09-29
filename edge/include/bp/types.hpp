@@ -41,10 +41,11 @@ struct TrackedDetection {
 // Contenuto di status.json. Se cambia il significato di un campo
 // va incrementato kSchemaVersion, cosi' il server se ne accorge.
 struct Status {
-    static constexpr int kSchemaVersion = 1;
+    static constexpr int kSchemaVersion = 2;
     double timestamp = 0.0;  // secondi Unix (UTC) al momento della scrittura
     double fps = 0.0;        // frame elaborati al secondo, sull'ultimo secondo
-    int count = 0;           // oggetti tracciati nell'ultimo frame
+    int count = 0;           // animali con traccia confermata nell'ultimo frame
+    int unique_count = 0;    // animali diversi visti dall'avvio del programma
 };
 
 } // namespace bp

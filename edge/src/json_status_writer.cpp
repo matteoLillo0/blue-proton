@@ -25,7 +25,8 @@ bool JsonStatusWriter::write(const Status& status) {
     json << "  \"timestamp\": " << status.timestamp << ",\n";
     json.precision(2);
     json << "  \"fps\": " << status.fps << ",\n"
-         << "  \"count\": " << status.count << "\n"
+         << "  \"count\": " << status.count << ",\n"
+         << "  \"unique_count\": " << status.unique_count << "\n"
          << "}\n";
 
     {

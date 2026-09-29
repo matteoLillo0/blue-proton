@@ -1,7 +1,7 @@
 # HANDOFF – scheletro edge C++
 
 Scheletro della pipeline edge: **sorgente → detector → tracker → conteggio → status.json**.
-Oggi tutti i pezzi sono finti ma il programma gira. Ognuno di voi sostituisce un pezzo
+Già veri: camera, file video, tracker e conteggio. Ancora finto: il detector. Ogni pezzo si sostituisce
 implementando **una** interfaccia, senza toccare il resto. Dati e regole: `docs/contract.md`.
 
 ## Compilare e lanciare
@@ -48,7 +48,7 @@ A fine video il programma esce e stampa frame totali e fps medi. `timestamp_s` �
 | Camera | `FrameSource` (`frame_source.hpp`) | ✅ `V4l2CameraSource` (`--camera`) |
 | File video | `FrameSource` (`frame_source.hpp`) | ✅ `OpenCvVideoSource` (`--video`) |
 | Modello YOLO | `IDetector` (`detector.hpp`) | `FakeDetector` |
-| Tracker | `ITracker` (`tracker.hpp`) | `NullTracker` |
+| Tracker | `ITracker` (`tracker.hpp`) | ✅ `IouTracker` |
 | Invio al server | `StatusWriter` (`status_writer.hpp`) | `JsonStatusWriter` (resta valido) |
 
 Procedura, uguale per tutti:
@@ -62,8 +62,26 @@ Procedura, uguale per tutti:
 (resize/letterbox, BGR→RGB, normalizzazione) e l'inferenza. Poi deve **riconvertire** le box
 dallo spazio del modello alle coordinate normalizzate del frame originale, togliendo il padding.
 
-**Tracker.** Deve rendere `track_id` stabile tra frame. Il conteggio in `main.cpp` oggi
-conta le box del frame. Col tracker vero andrà contato il numero di animali unici.
+**Tracker.** `IouTracker` (`iou_tracker.hpp`): abbina le box tra frame per sovrapposizione
+(IoU) con previsione a velocità costante, stile SORT senza Kalman. Una traccia riceve un id
+solo dopo `min_hits` frame consecutivi (filtra i falsi positivi); resta aperta per `max_misses`
+frame senza detection, ma solo `max_misses_at_edge` se è sul bordo (l'animale è uscito).
+I parametri sono in **frame**, non secondi: i default sono pensati per 10–25 fps.
+`main.cpp` conta gli id distinti → `unique_count` in `status.json`.
+Il vecchio `NullTracker` resta come esempio minimo ma non va più usato (gonfierebbe `unique_count`).
+
+**Detector finto.** Simula animali che attraversano la scena ogni 4 s, con detection
+mancate, tremolio e falsi positivi, in modo deterministico: serve a provare il tracker
+finché non c'è il modello.
+
+## Test
+
+```sh
+cmake --build edge/build && ctest --test-dir edge/build --output-on-failure
+```
+
+`edge/tests/test_tracker.cpp`: tracker (id stabili, conferma, occlusioni, incroci, uscita e
+rientro dallo stesso lato) e pipeline detector finto + tracker su 200 s a 10 e 25 fps.
 
 ## Punti aperti
 
@@ -75,5 +93,8 @@ conta le box del frame. Col tracker vero andrà contato il numero di animali uni
   resize/letterbox diventa obbligatoria: in quel caso togliere l'opzione in `CMakeLists.txt`.
   `--video` accetta anche URL (es. `rtsp://`) via `cv::VideoCapture`: utile per camere IP, non testato.
 - Modello: dimensione d'ingresso, formato del tensore (NHWC/NCHW, float/uint8), soglie NMS.
-- Conteggio definitivo e campi aggiuntivi di `status.json` (incrementare `schema_version`).
+- Conteggio: oggi `unique_count` = animali diversi dall'avvio. Da decidere se serve un
+  conteggio per finestra di tempo, per direzione (ingressi/uscite da un cancello), o che
+  sopravviva ai riavvii. Da verificare su video veri: soglie del tracker, scambi di id con
+  animali ammassati (lì servirebbe Kalman + algoritmo ungherese o ByteTrack).
 - Misure di FPS e memoria sulla scheda finale.

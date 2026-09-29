@@ -35,11 +35,14 @@ struct TrackedDetection {
 4. **Frame vuoti.** `data` può essere vuoto (sorgente finta). Un detector vero deve
    controllare `data.size() == width*height*3` prima di usarlo.
 5. **Un frame alla volta.** `ITracker::update()` va chiamato una volta per frame, in ordine.
+6. **Id di traccia.** `update()` restituisce una `TrackedDetection` per detection, nello stesso
+   ordine. `track_id` è `-1` finché la traccia non è confermata; gli id confermati non vengono
+   mai riusati (il conteggio degli animali unici si basa su questo).
 
-## status.json (`schema_version` 1)
+## status.json (`schema_version` 2)
 
 ```json
-{ "schema_version": 1, "timestamp": 1790265681.894, "fps": 10.00, "count": 3 }
+{ "schema_version": 2, "timestamp": 1790265681.894, "fps": 10.00, "count": 3, "unique_count": 17 }
 ```
 
 | Campo | Tipo | Significato |
@@ -47,7 +50,11 @@ struct TrackedDetection {
 | `schema_version` | int | Aumenta se cambia il significato di un campo. |
 | `timestamp` | float | Secondi Unix UTC al momento della scrittura. |
 | `fps` | float | Frame elaborati al secondo nell'ultimo secondo. |
-| `count` | int | Oggetti nell'ultimo frame. **Provvisorio**: non conta animali unici finché non c'è il tracker vero. |
+| `count` | int | Animali con traccia **confermata** nell'ultimo frame (visibili adesso). |
+| `unique_count` | int | Animali diversi visti dall'avvio del programma (id di traccia distinti). Riparte da 0 a ogni riavvio. |
+
+Da v1 a v2: `count` non conta più tutte le box ma solo le tracce confermate
+(i falsi positivi di un frame non entrano), ed è stato aggiunto `unique_count`.
 
 Il file viene aggiornato una volta al secondo con scrittura atomica
 (`status.json.tmp` + rename): chi lo legge non vede mai un file a metà.

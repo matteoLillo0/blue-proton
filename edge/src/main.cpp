@@ -1,5 +1,5 @@
 // Pipeline edge di Blue Proton: sorgente -> detector -> tracker -> conteggio -> status.json.
-// Oggi tutti i pezzi sono FINTI; per innestare quelli veri vedi docs/HANDOFF.md.
+// Pezzi veri: camera (V4L2), file video (OpenCV), tracker. Ancora FINTO: il detector. Vedi docs/HANDOFF.md.
 
 #include <atomic>
 #include <chrono>
@@ -11,11 +11,12 @@
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <unordered_set>
 
 #include "bp/fake_detector.hpp"
 #include "bp/fake_frame_source.hpp"
+#include "bp/iou_tracker.hpp"
 #include "bp/json_status_writer.hpp"
-#include "bp/null_tracker.hpp"
 #include "bp/v4l2_camera_source.hpp"
 #ifdef BP_HAVE_OPENCV
 #include "bp/opencv_video_source.hpp"
@@ -155,8 +156,7 @@ int main(int argc, char** argv) {
     }
     std::unique_ptr<bp::IDetector> detector = std::make_unique<bp::FakeDetector>();
     // TODO(team): sostituire con il detector vero (es. YOLO) quando il modello e' pronto.
-    std::unique_ptr<bp::ITracker> tracker = std::make_unique<bp::NullTracker>();
-    // TODO(team): sostituire con il tracker vero.
+    std::unique_ptr<bp::ITracker> tracker = std::make_unique<bp::IouTracker>();
     std::unique_ptr<bp::StatusWriter> writer = std::make_unique<bp::JsonStatusWriter>(opt.status_file);
 
     using Clock = std::chrono::steady_clock;
@@ -165,6 +165,9 @@ int main(int argc, char** argv) {
     int frames_in_window = 0;
     long frames_total = 0;
     int last_count = 0;
+    // Id visti almeno una volta. Il tracker non riusa mai un id, quindi quanti id
+    // diversi = quanti animali unici. Funziona con qualunque ITracker.
+    std::unordered_set<int> seen_ids;
     bp::Frame frame;  // fuori dal loop: il buffer dei pixel viene riusato
 
     std::cout << "Blue Proton edge avviato. status: " << opt.status_file << " (Ctrl+C per uscire)\n";
@@ -181,9 +184,14 @@ int main(int argc, char** argv) {
         }
         const auto detections = detector->detect(frame);
         const auto tracks = tracker->update(detections);
-        // Conteggio PROVVISORIO: oggetti nel frame corrente. Il conteggio vero
-        // (animali unici) arrivera' con il tracker.
-        last_count = static_cast<int>(tracks.size());
+        // Contiamo solo le tracce confermate (id >= 0): le altre possono essere falsi positivi.
+        last_count = 0;
+        for (const auto& t : tracks) {
+            if (t.track_id >= 0) {
+                ++last_count;
+                seen_ids.insert(t.track_id);
+            }
+        }
         ++frames_in_window;
         ++frames_total;
 
@@ -194,11 +202,12 @@ int main(int argc, char** argv) {
             status.timestamp = unix_now_s();
             status.fps = frames_in_window / window_s;
             status.count = last_count;
+            status.unique_count = static_cast<int>(seen_ids.size());
             const bool ok = writer->write(status);
 
             const double elapsed_s = std::chrono::duration<double>(now - start).count();
             std::cout << std::fixed << std::setprecision(1) << "[t=" << elapsed_s << "s] fps=" << status.fps
-                      << " count=" << status.count << (ok ? "" : "  ERRORE scrittura status") << '\n';
+                      << " count=" << status.count << " unique=" << status.unique_count << (ok ? "" : "  ERRORE scrittura status") << '\n';
 
             window_start = now;
             frames_in_window = 0;
@@ -210,7 +219,8 @@ int main(int argc, char** argv) {
 
     const double total_s = std::chrono::duration<double>(Clock::now() - start).count();
     std::cout << std::fixed << std::setprecision(1) << "Totale: " << frames_total << " frame in " << total_s
-              << " s (fps medi " << (total_s > 0.0 ? frames_total / total_s : 0.0) << ")\n";
+              << " s (fps medi " << (total_s > 0.0 ? frames_total / total_s : 0.0) << "), animali unici "
+              << seen_ids.size() << '\n';
 
     // Nessuna pulizia manuale: i unique_ptr distruggono tutto uscendo da main.
     std::cout << "Chiusura pulita.\n";
