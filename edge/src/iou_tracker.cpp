@@ -19,21 +19,23 @@ struct Candidate {
 
 } // namespace
 
-float iou(const Detection& a, const Detection& b) {
-    const float ix = std::max(0.0F, std::min(a.x + a.w, b.x + b.w) - std::max(a.x, b.x));
-    const float iy = std::max(0.0F, std::min(a.y + a.h, b.y + b.h) - std::max(a.y, b.y));
-    const float inter = ix * iy;
-    const float uni = a.w * a.h + b.w * b.h - inter;
-    return uni > 0.0F ? inter / uni : 0.0F;
-}
-
 IouTracker::IouTracker(IouTrackerParams params) : params_(params) {}
 
-std::vector<TrackedDetection> IouTracker::update(const std::vector<Detection>& detections) {
-    // 1. Previsione: ogni traccia si sposta della sua velocita' (un frame).
+Detection IouTracker::predict(const Track& t, double timestamp_s) {
+    const auto dt = static_cast<float>(timestamp_s - t.last_seen_s);
+    Detection p = t.box;
+    p.x += t.vx * dt;
+    p.y += t.vy * dt;
+    return p;
+}
+
+std::vector<TrackedDetection> IouTracker::update(const std::vector<Detection>& detections, double timestamp_s) {
+    // 1. Previsione: dove dovrebbe essere adesso ogni traccia, data la sua velocita'.
+    std::vector<Detection> predicted;
+    predicted.reserve(tracks_.size());
     for (Track& t : tracks_) {
-        t.box.x += t.vx;
-        t.box.y += t.vy;
+        predicted.push_back(predict(t, timestamp_s));
+        t.seen_now = false;
     }
 
     // 2. Abbinamento greedy: prima le coppie piu' sovrapposte. Con pochi animali per frame
@@ -41,7 +43,7 @@ std::vector<TrackedDetection> IouTracker::update(const std::vector<Detection>& d
     std::vector<Candidate> candidates;
     for (std::size_t ti = 0; ti < tracks_.size(); ++ti) {
         for (std::size_t di = 0; di < detections.size(); ++di) {
-            const float v = iou(tracks_[ti].box, detections[di]);
+            const float v = iou(predicted[ti], detections[di]);
             if (v >= params_.iou_threshold) {
                 candidates.push_back({v, ti, di});
             }
@@ -50,13 +52,12 @@ std::vector<TrackedDetection> IouTracker::update(const std::vector<Detection>& d
     std::sort(candidates.begin(), candidates.end(),
               [](const Candidate& a, const Candidate& b) { return a.iou > b.iou; });
 
-    std::vector<bool> track_used(tracks_.size(), false);
     std::vector<int> det_to_track(detections.size(), -1);
     for (const Candidate& c : candidates) {
-        if (track_used[c.track] || det_to_track[c.det] != -1) {
+        if (tracks_[c.track].seen_now || det_to_track[c.det] != -1) {
             continue;
         }
-        track_used[c.track] = true;
+        tracks_[c.track].seen_now = true;
         det_to_track[c.det] = static_cast<int>(c.track);
     }
 
@@ -65,25 +66,20 @@ std::vector<TrackedDetection> IouTracker::update(const std::vector<Detection>& d
         if (det_to_track[di] < 0) {
             continue;
         }
-        Track& t = tracks_[static_cast<std::size_t>(det_to_track[di])];
+        const auto ti = static_cast<std::size_t>(det_to_track[di]);
+        Track& t = tracks_[ti];
         const Detection& d = detections[di];
-        // t.box e' la posizione PREVISTA: la differenza e' l'errore di velocita' per frame.
-        // Dopo n frame persi la previsione e' andata avanti n+1 volte: dividiamo per n+1.
-        const auto frames = static_cast<float>(t.misses + 1);
-        t.vx += kVelocitySmoothing * (d.x - t.box.x) / frames;
-        t.vy += kVelocitySmoothing * (d.y - t.box.y) / frames;
+        // Errore della previsione diviso il tempo trascorso = correzione della velocita'.
+        const auto dt = static_cast<float>(timestamp_s - t.last_seen_s);
+        if (dt > 0.0F) {
+            t.vx += kVelocitySmoothing * (d.x - predicted[ti].x) / dt;
+            t.vy += kVelocitySmoothing * (d.y - predicted[ti].y) / dt;
+        }
         t.box = d;
-        t.misses = 0;
+        t.last_seen_s = timestamp_s;
         ++t.hits;
         if (t.id < 0 && t.hits >= params_.min_hits) {
             t.id = next_id_++;
-        }
-    }
-
-    // 3b. Tracce non viste: restano aperte (con la posizione prevista) per max_misses frame.
-    for (std::size_t ti = 0; ti < tracks_.size(); ++ti) {
-        if (!track_used[ti]) {
-            ++tracks_[ti].misses;
         }
     }
 
@@ -95,28 +91,33 @@ std::vector<TrackedDetection> IouTracker::update(const std::vector<Detection>& d
         out.push_back(TrackedDetection{detections[di], ti >= 0 ? tracks_[static_cast<std::size_t>(ti)].id : -1});
     }
 
-    // 3c. Chiusura: via le tracce perse da troppo (meno tolleranza sul bordo: probabilmente
-    //     l'animale e' uscito) e quelle non confermate che hanno perso il filo.
+    // 3b. Chiusura: le tracce non confermate che saltano un frame (probabili falsi positivi)
+    //     e quelle confermate non viste da troppo (meno tolleranza sul bordo: l'animale e' uscito).
     const float m = params_.edge_margin;
     tracks_.erase(std::remove_if(tracks_.begin(), tracks_.end(),
                                  [&](const Track& t) {
+                                     if (t.seen_now) {
+                                         return false;
+                                     }
                                      if (t.id < 0) {
-                                         return t.misses > 0;
+                                         return true;
                                      }
                                      const Detection& b = t.box;
                                      const bool at_edge = b.x <= m || b.y <= m || b.x + b.w >= 1.0F - m ||
                                                           b.y + b.h >= 1.0F - m;
-                                     return t.misses > (at_edge ? params_.max_misses_at_edge : params_.max_misses);
+                                     const double lost_s = timestamp_s - t.last_seen_s;
+                                     return lost_s > (at_edge ? params_.max_lost_at_edge_s : params_.max_lost_s);
                                  }),
                   tracks_.end());
 
-    // 3d. Detection senza traccia: nuova traccia candidata. Se min_hits <= 1 e' subito confermata.
+    // 3c. Detection senza traccia: nuova traccia candidata. Se min_hits <= 1 e' subito confermata.
     for (std::size_t di = 0; di < detections.size(); ++di) {
         if (det_to_track[di] >= 0) {
             continue;
         }
         Track t;
         t.box = detections[di];
+        t.last_seen_s = timestamp_s;
         t.hits = 1;
         if (params_.min_hits <= 1) {
             t.id = next_id_++;

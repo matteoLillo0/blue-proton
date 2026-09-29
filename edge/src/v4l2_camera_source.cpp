@@ -201,6 +201,26 @@ bool V4l2CameraSource::read(Frame& out) {
             std::cerr << device_ << ": VIDIOC_DQBUF fallito (" << std::strerror(errno) << ")\n";
             return false;
         }
+        // Se il detector e' piu' lento della camera, il driver accumula frame vecchi:
+        // li scartiamo e teniamo solo il piu' recente, cosi' contiamo cio' che succede ADESSO.
+        // Il device e' non bloccante: quando non ci sono altri frame pronti DQBUF da' EAGAIN.
+        for (;;) {
+            v4l2_buffer newer{};
+            newer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            newer.memory = V4L2_MEMORY_MMAP;
+            if (xioctl(fd_, VIDIOC_DQBUF, &newer) < 0) {
+                if (errno == EAGAIN) {
+                    break;
+                }
+                std::cerr << device_ << ": VIDIOC_DQBUF fallito (" << std::strerror(errno) << ")\n";
+                return false;
+            }
+            if (xioctl(fd_, VIDIOC_QBUF, &buf) < 0) {  // il vecchio torna al driver
+                std::cerr << device_ << ": VIDIOC_QBUF fallito (" << std::strerror(errno) << ")\n";
+                return false;
+            }
+            buf = newer;
+        }
 
         const std::size_t needed = static_cast<std::size_t>(bytes_per_line_) * height_;
         const bool complete = buf.bytesused >= needed && (buf.flags & V4L2_BUF_FLAG_ERROR) == 0;

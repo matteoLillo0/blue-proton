@@ -10,42 +10,56 @@ if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
   set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING "Tipo di build" FORCE)
 endif()
 
-# Libreria con interfacce e implementazioni: chi scrive un pezzo vero
-# (detector, tracker, sorgente camera) aggiunge qui il suo .cpp.
-add_library(bp_edge STATIC
-  src/fake_frame_source.cpp
-  src/fake_detector.cpp
-  src/null_tracker.cpp
+# OpenCV (4.x o 5.x): inferenza YOLO (dnn), resize (imgproc), file video (videoio).
+# Debian / UNO Q: sudo apt install libopencv-dev   -   Arch: sudo pacman -S opencv
+find_package(OpenCV REQUIRED COMPONENTS core imgproc videoio dnn)
+message(STATUS "OpenCV ${OpenCV_VERSION}")
+
+# Parti senza dipendenze (testabili da sole).
+add_library(bp_core STATIC
+  src/geometry.cpp
   src/iou_tracker.cpp
+  src/yolo_postprocess.cpp
   src/json_status_writer.cpp
   src/v4l2_camera_source.cpp   # solo Linux (V4L2)
 )
-target_include_directories(bp_edge PUBLIC include)
-target_compile_options(bp_edge PRIVATE -Wall -Wextra -Wpedantic)
+target_include_directories(bp_core PUBLIC include)
+target_compile_options(bp_core PRIVATE -Wall -Wextra -Wpedantic)
 
-# OpenCV e' OPZIONALE: se c'e' si compila anche la sorgente da file video (--video),
-# altrimenti tutto il resto funziona uguale. Per disattivarla: -DBP_WITH_OPENCV=OFF
-option(BP_WITH_OPENCV "Sorgente da file video con OpenCV" ON)
-if(BP_WITH_OPENCV)
-  find_package(OpenCV QUIET COMPONENTS core imgproc videoio)
-endif()
-if(OpenCV_FOUND)
-  message(STATUS "OpenCV ${OpenCV_VERSION}: sorgente video attiva")
-  target_sources(bp_edge PRIVATE src/opencv_video_source.cpp)
-  target_link_libraries(bp_edge PRIVATE ${OpenCV_LIBS})
-  target_include_directories(bp_edge SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
-  target_compile_definitions(bp_edge PUBLIC BP_HAVE_OPENCV)
-else()
-  message(STATUS "OpenCV non trovato: niente sorgente video (--video)")
-endif()
+# Parti che usano OpenCV.
+add_library(bp_opencv STATIC
+  src/opencv_video_source.cpp
+  src/opencv_yolo_detector.cpp
+  src/annotated_video_writer.cpp
+)
+target_link_libraries(bp_opencv PUBLIC bp_core PRIVATE ${OpenCV_LIBS})
+target_include_directories(bp_opencv SYSTEM PRIVATE ${OpenCV_INCLUDE_DIRS})
+target_compile_options(bp_opencv PRIVATE -Wall -Wextra -Wpedantic)
 
 add_executable(blue_proton_edge src/main.cpp)
-target_link_libraries(blue_proton_edge PRIVATE bp_edge)
+target_link_libraries(blue_proton_edge PRIVATE bp_opencv)
 target_compile_options(blue_proton_edge PRIVATE -Wall -Wextra -Wpedantic)
 
 # Test: ctest --test-dir edge/build --output-on-failure
 enable_testing()
-add_executable(test_tracker tests/test_tracker.cpp)
-target_link_libraries(test_tracker PRIVATE bp_edge)
-target_compile_options(test_tracker PRIVATE -Wall -Wextra -Wpedantic)
-add_test(NAME tracker COMMAND test_tracker)
+add_executable(bp_tests
+  tests/test_main.cpp
+  tests/test_tracker.cpp
+  tests/test_yolo_postprocess.cpp
+  tests/fake_detector.cpp      # detector simulato: esiste SOLO nei test
+)
+target_link_libraries(bp_tests PRIVATE bp_core)
+target_include_directories(bp_tests PRIVATE tests)
+target_compile_options(bp_tests PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME unit COMMAND bp_tests)
+
+# Test col modello vero: gira solo se il modello e i video sono stati scaricati
+# (tools/export_model.sh, tools/get_test_videos.sh).
+set(BP_MODEL "${CMAKE_SOURCE_DIR}/../models/yolo11n_640.onnx")
+set(BP_TEST_VIDEO "${CMAKE_SOURCE_DIR}/../data/videos/jersey.webm")
+if(EXISTS "${BP_MODEL}" AND EXISTS "${BP_TEST_VIDEO}")
+  add_test(NAME real_video
+    COMMAND blue_proton_edge --video "${BP_TEST_VIDEO}" --no-pace --model "${BP_MODEL}" --status-file real_video_status.json)
+  # Deve trovare almeno una mucca: se il detector o la riconversione delle box si rompono, fallisce.
+  set_tests_properties(real_video PROPERTIES FAIL_REGULAR_EXPRESSION "animali unici 0\n")
+endif()

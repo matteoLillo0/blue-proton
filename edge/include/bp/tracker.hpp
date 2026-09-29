@@ -13,7 +13,9 @@ public:
     virtual ~ITracker() = default;
 
     // Da chiamare una volta per frame, nell'ordine dei frame.
-    virtual std::vector<TrackedDetection> update(const std::vector<Detection>& detections) = 0;
+    // timestamp_s = Frame::timestamp_s del frame da cui vengono le detection: serve per
+    // ragionare in secondi e non in frame, perche' gli fps cambiano (PC, scheda, video).
+    virtual std::vector<TrackedDetection> update(const std::vector<Detection>& detections, double timestamp_s) = 0;
 };
 
 } // namespace bp

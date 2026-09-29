@@ -8,7 +8,7 @@ Definizione in codice: `edge/include/bp/types.hpp`. Ogni modifica va concordata 
 struct Frame {
     int width, height;               // pixel
     std::vector<uint8_t> data;       // BGR, 3 byte/pixel, righe contigue: size = width*height*3
-    double timestamp_s;              // secondi dall'avvio della sorgente (orologio monotono)
+    double timestamp_s;              // secondi dall'inizio della sorgente, monotono (video: tempo nel video)
 };
 
 struct Detection {
@@ -32,9 +32,11 @@ struct TrackedDetection {
    della camera né quella d'ingresso del modello (es. 640x640 con letterbox).
    La riconversione dallo spazio del modello allo spazio del frame è compito del detector.
 3. **Box nel frame.** Il detector restituisce box già ritagliate dentro 0..1.
-4. **Frame vuoti.** `data` può essere vuoto (sorgente finta). Un detector vero deve
-   controllare `data.size() == width*height*3` prima di usarlo.
-5. **Un frame alla volta.** `ITracker::update()` va chiamato una volta per frame, in ordine.
+4. **Dimensione dei dati.** Chi usa `data` controlla `data.size() == width*height*3`
+   prima di usarlo (un detector che riceve un frame malformato restituisce zero box).
+5. **Un frame alla volta.** `ITracker::update(detections, frame.timestamp_s)` va chiamato una
+   volta per frame, in ordine, con il timestamp del frame da cui vengono le detection:
+   il tracker ragiona in secondi, perché gli fps cambiano tra PC, scheda e video.
 6. **Id di traccia.** `update()` restituisce una `TrackedDetection` per detection, nello stesso
    ordine. `track_id` è `-1` finché la traccia non è confermata; gli id confermati non vengono
    mai riusati (il conteggio degli animali unici si basa su questo).

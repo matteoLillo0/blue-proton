@@ -1,5 +1,6 @@
 // Pipeline edge di Blue Proton: sorgente -> detector -> tracker -> conteggio -> status.json.
-// Pezzi veri: camera (V4L2), file video (OpenCV), tracker. Ancora FINTO: il detector. Vedi docs/HANDOFF.md.
+// Tutti i pezzi sono veri: camera (V4L2) o file video, YOLO (OpenCV DNN), tracker IoU.
+// Per sostituirne uno vedi docs/HANDOFF.md.
 
 #include <atomic>
 #include <chrono>
@@ -13,14 +14,12 @@
 #include <string>
 #include <unordered_set>
 
-#include "bp/fake_detector.hpp"
-#include "bp/fake_frame_source.hpp"
+#include "bp/annotated_video_writer.hpp"
 #include "bp/iou_tracker.hpp"
 #include "bp/json_status_writer.hpp"
-#include "bp/v4l2_camera_source.hpp"
-#ifdef BP_HAVE_OPENCV
 #include "bp/opencv_video_source.hpp"
-#endif
+#include "bp/opencv_yolo_detector.hpp"
+#include "bp/v4l2_camera_source.hpp"
 
 namespace {
 
@@ -34,24 +33,39 @@ void on_signal(int /*signum*/) { g_stop = true; }
 struct Options {
     std::string status_file = "status.json";
     double max_seconds = 0.0;  // 0 = senza limite
-    std::string camera;        // vuoto = sorgente finta
-    std::string video;         // file video (richiede OpenCV)
+    // Sorgente: esattamente una tra camera e video.
+    std::string camera;
+    std::string video;
     bool pace = true;          // video alla sua velocita' reale
     int width = 640;
     int height = 480;
     double fps = 10.0;
-    std::string save_frame;    // se impostato, salva il primo frame come immagine PPM
+    // Detector.
+    std::string model = "models/yolo11n_640.onnx";
+    int model_size = 640;
+    bp::YoloDecodeParams yolo;
+    // Debug.
+    std::string save_frame;    // salva il primo frame come immagine PPM
+    std::string debug_video;   // salva un video con box e id disegnati
 };
 
 void print_usage(const char* prog) {
-    std::cout << "Uso: " << prog << " [opzioni]\n"
+    std::cout << "Uso: " << prog << " (--camera <device> | --video <file>) [opzioni]\n"
+              << "Sorgente:\n"
+              << "  --camera <device>      camera V4L2, es. /dev/video0\n"
+              << "  --width <px> --height <px> --fps <n>   richiesta alla camera (default: 640x480 @ 10)\n"
+              << "  --video <file>         file video (o URL rtsp://)\n"
+              << "  --no-pace              con --video: il piu' veloce possibile invece che a velocita' reale\n"
+              << "Detector:\n"
+              << "  --model <file.onnx>    modello YOLO (default: models/yolo11n_640.onnx)\n"
+              << "  --model-size <px>      lato d'ingresso con cui e' stato esportato (default: 640)\n"
+              << "  --class-id <n>         classe del modello da contare (default: 19 = cow in COCO)\n"
+              << "  --conf <0..1>          confidenza minima (default: 0.35)\n"
+              << "Uscita:\n"
               << "  --status-file <path>   dove scrivere status.json (default: status.json)\n"
               << "  --max-seconds <s>      esce dopo <s> secondi (default: mai)\n"
-              << "  --camera <device>      usa una camera V4L2, es. /dev/video0 (default: sorgente finta)\n"
-              << "  --video <file>         legge un file video (serve build con OpenCV)\n"
-              << "  --no-pace              con --video: il piu' veloce possibile invece che a velocita' reale\n"
-              << "  --width <px> --height <px> --fps <n>   richiesta alla sorgente (default: 640x480 @ 10)\n"
-              << "  --save-frame <file.ppm>                salva il primo frame per controllarlo a occhio\n";
+              << "  --save-frame <file.ppm>   salva il primo frame\n"
+              << "  --debug-video <file.mp4>  salva il video con box e id disegnati\n";
 }
 
 // Ritorna false se gli argomenti non sono validi.
@@ -59,40 +73,51 @@ bool parse_args(int argc, char** argv, Options& opt) {
     for (int i = 1; i < argc; ++i) {
         const std::string arg = argv[i];
         const bool has_value = i + 1 < argc;
-        if (arg == "--status-file" && has_value) {
-            opt.status_file = argv[++i];
-        } else if (arg == "--camera" && has_value) {
-            opt.camera = argv[++i];
-        } else if (arg == "--video" && has_value) {
-            opt.video = argv[++i];
-        } else if (arg == "--no-pace") {
+        if (arg == "--no-pace") {
             opt.pace = false;
-        } else if (arg == "--save-frame" && has_value) {
-            opt.save_frame = argv[++i];
-        } else if ((arg == "--max-seconds" || arg == "--width" || arg == "--height" || arg == "--fps") && has_value) {
-            double value = 0.0;
-            try {
-                value = std::stod(argv[++i]);
-            } catch (const std::exception&) {
-                return false;
-            }
-            if (arg == "--max-seconds") {
-                opt.max_seconds = value;
-            } else if (value <= 0.0) {
-                return false;
-            } else if (arg == "--width") {
-                opt.width = static_cast<int>(value);
-            } else if (arg == "--height") {
-                opt.height = static_cast<int>(value);
-            } else {
-                opt.fps = value;
-            }
-        } else {
+            continue;
+        }
+        if (!has_value) {
             return false;
         }
+        const std::string value = argv[++i];
+        try {
+            if (arg == "--status-file") {
+                opt.status_file = value;
+            } else if (arg == "--camera") {
+                opt.camera = value;
+            } else if (arg == "--video") {
+                opt.video = value;
+            } else if (arg == "--model") {
+                opt.model = value;
+            } else if (arg == "--save-frame") {
+                opt.save_frame = value;
+            } else if (arg == "--debug-video") {
+                opt.debug_video = value;
+            } else if (arg == "--max-seconds") {
+                opt.max_seconds = std::stod(value);
+            } else if (arg == "--width") {
+                opt.width = std::stoi(value);
+            } else if (arg == "--height") {
+                opt.height = std::stoi(value);
+            } else if (arg == "--fps") {
+                opt.fps = std::stod(value);
+            } else if (arg == "--model-size") {
+                opt.model_size = std::stoi(value);
+            } else if (arg == "--class-id") {
+                opt.yolo.model_class_id = std::stoi(value);
+            } else if (arg == "--conf") {
+                opt.yolo.conf_threshold = std::stof(value);
+            } else {
+                return false;
+            }
+        } catch (const std::exception&) {
+            return false;  // numero non valido
+        }
     }
-    // Una sola sorgente alla volta.
-    return opt.camera.empty() || opt.video.empty();
+    const bool one_source = opt.camera.empty() != opt.video.empty();
+    return one_source && opt.width > 0 && opt.height > 0 && opt.fps > 0.0 && opt.yolo.conf_threshold >= 0.0F &&
+           opt.yolo.conf_threshold <= 1.0F;
 }
 
 // PPM (P6): il formato immagine piu' semplice che esista, si apre con qualunque visualizzatore.
@@ -108,23 +133,19 @@ bool save_ppm(const bp::Frame& frame, const std::string& path) {
     return static_cast<bool>(f);
 }
 
-std::unique_ptr<bp::FrameSource> make_source(const Options& opt) {
+// Crea la sorgente scelta e ne restituisce gli fps nominali in `fps_out`.
+std::unique_ptr<bp::FrameSource> make_source(const Options& opt, double& fps_out) {
     if (!opt.video.empty()) {
-#ifdef BP_HAVE_OPENCV
         auto vid = std::make_unique<bp::OpenCvVideoSource>(opt.video, opt.pace);
         std::cout << "Video " << opt.video << ": " << vid->width() << 'x' << vid->height() << " @ " << vid->fps()
                   << " fps" << (opt.pace ? "" : " (senza pacing)") << '\n';
+        fps_out = vid->fps();
         return vid;
-#else
-        throw std::runtime_error("--video richiede una build con OpenCV (vedi docs/HANDOFF.md)");
-#endif
-    }
-    if (opt.camera.empty()) {
-        return std::make_unique<bp::FakeFrameSource>(opt.fps, opt.width, opt.height);
     }
     auto cam = std::make_unique<bp::V4l2CameraSource>(opt.camera, opt.width, opt.height, opt.fps);
     std::cout << "Camera " << opt.camera << ": " << cam->width() << 'x' << cam->height() << " @ " << cam->fps()
               << " fps\n";
+    fps_out = cam->fps();
     return cam;
 }
 
@@ -146,29 +167,38 @@ int main(int argc, char** argv) {
     std::signal(SIGTERM, on_signal);  // kill / systemctl stop sulla scheda
 
     // Il main possiede ogni pezzo tramite unique_ptr all'INTERFACCIA:
-    // per usare un pezzo vero si cambia solo la riga di costruzione.
+    // per cambiare un pezzo si cambia solo la riga di costruzione.
     std::unique_ptr<bp::FrameSource> source;
+    std::unique_ptr<bp::IDetector> detector;
+    double source_fps = 0.0;
     try {
-        source = make_source(opt);
+        source = make_source(opt, source_fps);
+        detector = std::make_unique<bp::OpenCvYoloDetector>(opt.model, opt.model_size, opt.yolo);
+        std::cout << "Modello " << opt.model << " (" << opt.model_size << " px, classe " << opt.yolo.model_class_id
+                  << ", conf >= " << opt.yolo.conf_threshold << ")\n";
     } catch (const std::exception& e) {
-        std::cerr << "Errore sorgente: " << e.what() << '\n';
+        std::cerr << "Errore: " << e.what() << '\n';
         return EXIT_FAILURE;
     }
-    std::unique_ptr<bp::IDetector> detector = std::make_unique<bp::FakeDetector>();
-    // TODO(team): sostituire con il detector vero (es. YOLO) quando il modello e' pronto.
     std::unique_ptr<bp::ITracker> tracker = std::make_unique<bp::IouTracker>();
     std::unique_ptr<bp::StatusWriter> writer = std::make_unique<bp::JsonStatusWriter>(opt.status_file);
+    std::unique_ptr<bp::AnnotatedVideoWriter> debug_video;
+    if (!opt.debug_video.empty()) {
+        debug_video = std::make_unique<bp::AnnotatedVideoWriter>(opt.debug_video, source_fps);
+    }
 
     using Clock = std::chrono::steady_clock;
     const auto start = Clock::now();
     auto window_start = start;
     int frames_in_window = 0;
     long frames_total = 0;
+    double detect_s_total = 0.0;  // tempo speso nel detector: il collo di bottiglia sulla scheda
     int last_count = 0;
     // Id visti almeno una volta. Il tracker non riusa mai un id, quindi quanti id
     // diversi = quanti animali unici. Funziona con qualunque ITracker.
     std::unordered_set<int> seen_ids;
     bp::Frame frame;  // fuori dal loop: il buffer dei pixel viene riusato
+    int exit_code = EXIT_SUCCESS;
 
     std::cout << "Blue Proton edge avviato. status: " << opt.status_file << " (Ctrl+C per uscire)\n";
 
@@ -177,13 +207,24 @@ int main(int argc, char** argv) {
             std::cout << "Sorgente terminata.\n";
             break;
         }
-        if (!opt.save_frame.empty() && !frame.data.empty()) {
+        if (!opt.save_frame.empty()) {
             std::cout << (save_ppm(frame, opt.save_frame) ? "Frame salvato in " : "ERRORE salvataggio frame in ")
                       << opt.save_frame << '\n';
             opt.save_frame.clear();  // solo il primo
         }
-        const auto detections = detector->detect(frame);
-        const auto tracks = tracker->update(detections);
+
+        std::vector<bp::Detection> detections;
+        const auto t0 = Clock::now();
+        try {
+            detections = detector->detect(frame);
+        } catch (const std::exception& e) {
+            std::cerr << "Errore detector: " << e.what() << '\n';
+            exit_code = EXIT_FAILURE;
+            break;
+        }
+        detect_s_total += std::chrono::duration<double>(Clock::now() - t0).count();
+
+        const auto tracks = tracker->update(detections, frame.timestamp_s);
         // Contiamo solo le tracce confermate (id >= 0): le altre possono essere falsi positivi.
         last_count = 0;
         for (const auto& t : tracks) {
@@ -191,6 +232,10 @@ int main(int argc, char** argv) {
                 ++last_count;
                 seen_ids.insert(t.track_id);
             }
+        }
+        if (debug_video && !debug_video->write(frame, tracks)) {
+            std::cerr << "ERRORE scrittura " << opt.debug_video << ", video di debug disattivato\n";
+            debug_video.reset();
         }
         ++frames_in_window;
         ++frames_total;
@@ -207,7 +252,8 @@ int main(int argc, char** argv) {
 
             const double elapsed_s = std::chrono::duration<double>(now - start).count();
             std::cout << std::fixed << std::setprecision(1) << "[t=" << elapsed_s << "s] fps=" << status.fps
-                      << " count=" << status.count << " unique=" << status.unique_count << (ok ? "" : "  ERRORE scrittura status") << '\n';
+                      << " count=" << status.count << " unique=" << status.unique_count
+                      << (ok ? "" : "  ERRORE scrittura status") << '\n';
 
             window_start = now;
             frames_in_window = 0;
@@ -219,10 +265,11 @@ int main(int argc, char** argv) {
 
     const double total_s = std::chrono::duration<double>(Clock::now() - start).count();
     std::cout << std::fixed << std::setprecision(1) << "Totale: " << frames_total << " frame in " << total_s
-              << " s (fps medi " << (total_s > 0.0 ? frames_total / total_s : 0.0) << "), animali unici "
+              << " s (fps medi " << (total_s > 0.0 ? frames_total / total_s : 0.0) << ", detector "
+              << (frames_total > 0 ? 1000.0 * detect_s_total / frames_total : 0.0) << " ms/frame), animali unici "
               << seen_ids.size() << '\n';
 
     // Nessuna pulizia manuale: i unique_ptr distruggono tutto uscendo da main.
     std::cout << "Chiusura pulita.\n";
-    return EXIT_SUCCESS;
+    return exit_code;
 }

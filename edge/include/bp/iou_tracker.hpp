@@ -2,27 +2,29 @@
 
 #include <vector>
 
+#include "bp/geometry.hpp"
 #include "bp/tracker.hpp"
 
 namespace bp {
 
-// Parametri del tracker. Le durate sono in FRAME (ITracker non riceve il tempo):
-// se cambia molto l'fps della sorgente vanno riadattate.
+// Parametri del tracker. Le durate sono in SECONDI: valgono uguali a 30 fps su PC
+// e a pochi fps sulla scheda.
 struct IouTrackerParams {
     // Sovrapposizione minima (IoU) tra traccia prevista e detection per considerarle
     // lo stesso animale. Piu' bassa = regge movimenti veloci, ma rischia scambi di id.
     float iou_threshold = 0.3F;
     // Frame consecutivi in cui una traccia deve essere vista prima di ricevere un id.
-    // Filtra i falsi positivi di un frame solo, che altrimenti gonfierebbero il conteggio.
+    // Filtra i falsi positivi isolati, che altrimenti gonfierebbero il conteggio.
     int min_hits = 3;
-    // Frame di fila senza detection dopo cui la traccia viene chiusa. Copre le detection
-    // mancate e le brevi occlusioni; troppo alto = un animale nuovo puo' "ereditare" un id vecchio.
-    int max_misses = 10;
-    // Come max_misses, ma per le tracce che toccano il bordo dell'immagine: se spariscono
+    // Per quanto una traccia resta aperta senza detection. Copre le detection mancate
+    // (animale lontano, poca luce) e le brevi occlusioni; troppo alto = un animale nuovo
+    // nello stesso punto puo' "ereditare" un id vecchio.
+    double max_lost_s = 2.0;
+    // Come max_lost_s, ma per le tracce che toccano il bordo dell'immagine: se spariscono
     // li' sono quasi certamente uscite. Chiuderle presto evita che un animale che entra
-    // dallo stesso lato "erediti" l'id di quello appena uscito. Rischio opposto: un animale
-    // fermo sul bordo e non visto per piu' di questi frame riceve un id nuovo.
-    int max_misses_at_edge = 3;
+    // dallo stesso lato erediti l'id di quello appena uscito. Rischio opposto: un animale
+    // fermo sul bordo e non visto per piu' di cosi' riceve un id nuovo.
+    double max_lost_at_edge_s = 0.4;
     // Distanza dal bordo (normalizzata) entro cui una box "tocca" il bordo.
     float edge_margin = 0.01F;
 };
@@ -40,24 +42,25 @@ public:
 
     // Restituisce una TrackedDetection per ogni detection, nello STESSO ordine.
     // track_id = -1 finche' la traccia non e' confermata (vedi min_hits).
-    std::vector<TrackedDetection> update(const std::vector<Detection>& detections) override;
+    std::vector<TrackedDetection> update(const std::vector<Detection>& detections, double timestamp_s) override;
 
 private:
     struct Track {
-        Detection box;       // ultima posizione nota o prevista
-        float vx = 0.0F;     // velocita' media in unita' normalizzate per frame
+        Detection box;             // ultima posizione VISTA (non la previsione)
+        float vx = 0.0F;           // velocita' media in unita' normalizzate al secondo
         float vy = 0.0F;
-        int id = -1;         // -1 finche' non confermata
-        int hits = 0;        // frame consecutivi in cui e' stata vista
-        int misses = 0;      // frame consecutivi in cui NON e' stata vista
+        double last_seen_s = 0.0;  // timestamp dell'ultima detection abbinata
+        int id = -1;               // -1 finche' non confermata
+        int hits = 0;              // frame consecutivi in cui e' stata vista
+        bool seen_now = false;     // abbinata nel frame corrente
     };
+
+    // Posizione prevista della traccia all'istante timestamp_s.
+    static Detection predict(const Track& t, double timestamp_s);
 
     IouTrackerParams params_;
     std::vector<Track> tracks_;
     int next_id_ = 1;
 };
-
-// Intersection over Union di due box: 0 = disgiunte, 1 = identiche.
-float iou(const Detection& a, const Detection& b);
 
 } // namespace bp

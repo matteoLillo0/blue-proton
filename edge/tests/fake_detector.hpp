@@ -4,7 +4,7 @@
 
 namespace bp {
 
-// Detector FINTO che imita un detector vero, per sviluppare tracker, server e dashboard.
+// Detector SIMULATO, solo per i test: imita un detector vero per verificare il tracker.
 // Ogni kSpawnEvery_s secondi un animale entra da un lato e attraversa la scena in
 // kCrossTime_s secondi (alternando sinistra->destra e destra->sinistra). Come un modello
 // vero, a volte non vede un animale, le box tremano un po' e ogni tanto compare un falso positivo.

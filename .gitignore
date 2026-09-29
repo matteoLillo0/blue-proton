@@ -11,3 +11,8 @@ status.json.tmp
 .vscode/
 .idea/
 .cache/
+
+# Modelli (si rigenerano con tools/export_model.sh)
+models/*.onnx
+models/*.pt
+data/videos/

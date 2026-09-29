@@ -1,4 +1,4 @@
-#include "bp/fake_detector.hpp"
+#include "fake_detector.hpp"
 
 #include <algorithm>
 #include <cmath>
