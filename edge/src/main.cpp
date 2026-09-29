@@ -5,6 +5,7 @@
 #include <chrono>
 #include <csignal>
 #include <cstdlib>
+#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
@@ -14,6 +15,7 @@
 #include "bp/fake_frame_source.hpp"
 #include "bp/json_status_writer.hpp"
 #include "bp/null_tracker.hpp"
+#include "bp/v4l2_camera_source.hpp"
 
 namespace {
 
@@ -27,10 +29,20 @@ void on_signal(int /*signum*/) { g_stop = true; }
 struct Options {
     std::string status_file = "status.json";
     double max_seconds = 0.0;  // 0 = senza limite
+    std::string camera;        // vuoto = sorgente finta
+    int width = 640;
+    int height = 480;
+    double fps = 10.0;
+    std::string save_frame;    // se impostato, salva il primo frame come immagine PPM
 };
 
 void print_usage(const char* prog) {
-    std::cout << "Uso: " << prog << " [--status-file <path>] [--max-seconds <s>]\n";
+    std::cout << "Uso: " << prog << " [opzioni]\n"
+              << "  --status-file <path>   dove scrivere status.json (default: status.json)\n"
+              << "  --max-seconds <s>      esce dopo <s> secondi (default: mai)\n"
+              << "  --camera <device>      usa una camera V4L2, es. /dev/video0 (default: sorgente finta)\n"
+              << "  --width <px> --height <px> --fps <n>   richiesta alla sorgente (default: 640x480 @ 10)\n"
+              << "  --save-frame <file.ppm>                salva il primo frame per controllarlo a occhio\n";
 }
 
 // Ritorna false se gli argomenti non sono validi.
@@ -40,17 +52,56 @@ bool parse_args(int argc, char** argv, Options& opt) {
         const bool has_value = i + 1 < argc;
         if (arg == "--status-file" && has_value) {
             opt.status_file = argv[++i];
-        } else if (arg == "--max-seconds" && has_value) {
+        } else if (arg == "--camera" && has_value) {
+            opt.camera = argv[++i];
+        } else if (arg == "--save-frame" && has_value) {
+            opt.save_frame = argv[++i];
+        } else if ((arg == "--max-seconds" || arg == "--width" || arg == "--height" || arg == "--fps") && has_value) {
+            double value = 0.0;
             try {
-                opt.max_seconds = std::stod(argv[++i]);
+                value = std::stod(argv[++i]);
             } catch (const std::exception&) {
                 return false;
+            }
+            if (arg == "--max-seconds") {
+                opt.max_seconds = value;
+            } else if (value <= 0.0) {
+                return false;
+            } else if (arg == "--width") {
+                opt.width = static_cast<int>(value);
+            } else if (arg == "--height") {
+                opt.height = static_cast<int>(value);
+            } else {
+                opt.fps = value;
             }
         } else {
             return false;
         }
     }
     return true;
+}
+
+// PPM (P6): il formato immagine piu' semplice che esista, si apre con qualunque visualizzatore.
+// Vuole RGB, il Frame e' BGR: invertiamo i canali.
+bool save_ppm(const bp::Frame& frame, const std::string& path) {
+    std::ofstream f(path, std::ios::binary);
+    f << "P6\n" << frame.width << ' ' << frame.height << "\n255\n";
+    for (std::size_t i = 0; i + 2 < frame.data.size(); i += 3) {
+        const char rgb[3] = {static_cast<char>(frame.data[i + 2]), static_cast<char>(frame.data[i + 1]),
+                             static_cast<char>(frame.data[i])};
+        f.write(rgb, 3);
+    }
+    return static_cast<bool>(f);
+}
+
+std::unique_ptr<bp::FrameSource> make_source(const Options& opt) {
+    if (opt.camera.empty()) {
+        return std::make_unique<bp::FakeFrameSource>(opt.fps, opt.width, opt.height);
+    }
+    auto cam = std::make_unique<bp::V4l2CameraSource>(opt.camera, opt.width, opt.height, opt.fps);
+    std::cout << "Camera " << opt.camera << ": " << cam->width() << 'x' << cam->height() << " @ " << cam->fps()
+              << " fps\n";
+    return cam;
 }
 
 double unix_now_s() {
@@ -72,7 +123,13 @@ int main(int argc, char** argv) {
 
     // Il main possiede ogni pezzo tramite unique_ptr all'INTERFACCIA:
     // per usare un pezzo vero si cambia solo la riga di costruzione.
-    std::unique_ptr<bp::FrameSource> source = std::make_unique<bp::FakeFrameSource>(10.0);
+    std::unique_ptr<bp::FrameSource> source;
+    try {
+        source = make_source(opt);
+    } catch (const std::exception& e) {
+        std::cerr << "Errore sorgente: " << e.what() << '\n';
+        return EXIT_FAILURE;
+    }
     std::unique_ptr<bp::IDetector> detector = std::make_unique<bp::FakeDetector>();
     // TODO(team): sostituire con il detector vero (es. YOLO) quando il modello e' pronto.
     std::unique_ptr<bp::ITracker> tracker = std::make_unique<bp::NullTracker>();
@@ -92,6 +149,11 @@ int main(int argc, char** argv) {
         if (!source->read(frame)) {
             std::cout << "Sorgente terminata.\n";
             break;
+        }
+        if (!opt.save_frame.empty() && !frame.data.empty()) {
+            std::cout << (save_ppm(frame, opt.save_frame) ? "Frame salvato in " : "ERRORE salvataggio frame in ")
+                      << opt.save_frame << '\n';
+            opt.save_frame.clear();  // solo il primo
         }
         const auto detections = detector->detect(frame);
         const auto tracks = tracker->update(detections);

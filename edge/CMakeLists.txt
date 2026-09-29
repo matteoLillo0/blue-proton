@@ -17,6 +17,7 @@ add_library(bp_edge STATIC
   src/fake_detector.cpp
   src/null_tracker.cpp
   src/json_status_writer.cpp
+  src/v4l2_camera_source.cpp   # solo Linux (V4L2)
 )
 target_include_directories(bp_edge PUBLIC include)
 target_compile_options(bp_edge PRIVATE -Wall -Wextra -Wpedantic)

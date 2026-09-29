@@ -17,11 +17,24 @@ cmake --build edge/build -j
 
 Ogni secondo stampa `fps` e `count` e aggiorna `status.json` (default: cartella corrente).
 
+**Camera vera (Linux, V4L2).** Senza `--camera` si usa la sorgente finta.
+
+```sh
+./edge/build/blue_proton_edge --camera /dev/video0                       # 640x480 @ 10 fps
+./edge/build/blue_proton_edge --camera /dev/video0 --width 1280 --height 720 --fps 30
+./edge/build/blue_proton_edge --camera /dev/video0 --save-frame /tmp/f.ppm   # salva il 1° frame
+```
+
+Risoluzione e fps sono *richieste*: la camera sceglie i valori supportati più vicini e il
+programma stampa quelli effettivi. Formati e risoluzioni: `v4l2-ctl -d /dev/video0 --list-formats-ext`.
+Con poca luce molte webcam abbassano da sole gli fps (esposizione più lunga).
+
 ## Dove si innesta ogni pezzo
 
 | Pezzo vero | Interfaccia da implementare | Pezzo finto da sostituire |
 |---|---|---|
-| Camera / file video | `FrameSource` (`frame_source.hpp`) | `FakeFrameSource` |
+| Camera | `FrameSource` (`frame_source.hpp`) | ✅ `V4l2CameraSource` (`--camera`) |
+| File video | `FrameSource` (`frame_source.hpp`) | da fare |
 | Modello YOLO | `IDetector` (`detector.hpp`) | `FakeDetector` |
 | Tracker | `ITracker` (`tracker.hpp`) | `NullTracker` |
 | Invio al server | `StatusWriter` (`status_writer.hpp`) | `JsonStatusWriter` (resta valido) |
@@ -42,7 +55,12 @@ conta le box del frame. Col tracker vero andrà contato il numero di animali uni
 
 ## Punti aperti
 
-- Sorgente vera: con OpenCV (`cv::VideoCapture`) o altro? È l'unica dipendenza da decidere.
+- Sorgente camera: fatta con V4L2 diretto, **solo formato YUYV** (convertito in BGR da noi,
+  nessuna dipendenza). Le camere che danno solo MJPEG/H.264 (alcune USB, molte IP) richiedono
+  un decoder: libjpeg-turbo, OpenCV o GStreamer. Le camere CSI delle schede (Jetson, Raspberry)
+  di solito passano da GStreamer/libcamera: da verificare sulla scheda finale.
+- File video: serve un decoder (OpenCV `cv::VideoCapture` o FFmpeg). Da decidere insieme al
+  detector, che per resize/letterbox potrebbe voler usare OpenCV comunque.
 - Modello: dimensione d'ingresso, formato del tensore (NHWC/NCHW, float/uint8), soglie NMS.
 - Conteggio definitivo e campi aggiuntivi di `status.json` (incrementare `schema_version`).
 - Misure di FPS e memoria sulla scheda finale.
