@@ -13,6 +13,7 @@ videoio, dnn). Debian / UNO Q: `sudo apt install libopencv-dev`. Arch: `sudo pac
 ```sh
 tools/export_model.sh            # scarica YOLO11n (COCO) e lo esporta in models/yolo11n_640.onnx
 tools/export_model.sh yolo11n 320   # variante 320 px, ~4x più veloce
+tools/export_model.sh percorso/best.pt 320   # il nostro modello -> models/best_320.onnx
 tools/get_test_videos.sh         # video veri di bovini (licenza libera) in data/videos/
 cmake -S edge -B edge/build
 cmake --build edge/build -j
@@ -24,6 +25,9 @@ Modelli e video **non** sono in git: si rigenerano con gli script (servono `uv` 
 # Camera (V4L2): Ctrl+C per uscire
 ./edge/build/blue_proton_edge --camera /dev/video0
 ./edge/build/blue_proton_edge --camera /dev/video0 --width 1280 --height 720 --fps 30
+
+# Camera che dà risoluzioni/fps alti solo in MJPEG: la apre e decodifica OpenCV
+./edge/build/blue_proton_edge --video /dev/video0 --width 1280 --height 720 --fps 30
 
 # File video: alla velocità del video (come una camera) o il più veloce possibile (benchmark)
 ./edge/build/blue_proton_edge --video data/videos/jersey.webm
@@ -43,7 +47,7 @@ compresi i **ms per frame del detector**: è il numero da misurare sulla scheda.
 | Pezzo | Interfaccia | Implementazione |
 |---|---|---|
 | Camera | `FrameSource` | `V4l2CameraSource` (`--camera`) |
-| File video / URL | `FrameSource` | `OpenCvVideoSource` (`--video`) |
+| File video, camera MJPEG, URL, GStreamer | `FrameSource` | `OpenCvVideoSource` (`--video`) |
 | Detector | `IDetector` | `OpenCvYoloDetector` (`--model`) |
 | Tracker | `ITracker` | `IouTracker` |
 | Uscita | `StatusWriter` | `JsonStatusWriter` |
@@ -56,13 +60,20 @@ dall'interfaccia, `.cpp` in `edge/CMakeLists.txt`, e in `main.cpp` si cambia sol
 lento della camera, i frame arretrati vengono scartati: si analizza sempre il più recente.
 Risoluzione e fps sono richieste: la camera sceglie i valori supportati più vicini e il
 programma stampa quelli effettivi (`v4l2-ctl -d /dev/video0 --list-formats-ext` per vederli).
+Molte camere USB danno risoluzioni e fps alti solo in **MJPEG** (es. 1280x720: 30 fps in
+MJPEG, 10 in YUYV). In quel caso `--video /dev/video0`: apre la camera con il backend V4L2
+di OpenCV in MJPEG, con le stesse `--width/--height/--fps`. `--video` accetta anche URL
+(`rtsp://...`) e pipeline GStreamer che finiscono con `! appsink`. Per le sorgenti dal vivo
+il timestamp è l'istante di lettura e il pacing è disattivato.
 
 **Detector.** YOLOv8/YOLO11 in ONNX eseguito con OpenCV DNN su CPU. Letterbox → RGB 0..1
 NCHW → inferenza → decodifica → NMS → box riportate alle coordinate normalizzate del frame
 originale (togliendo il padding). La parte dopo l'inferenza (`yolo_postprocess.hpp`) è C++
 puro, indipendente da OpenCV: si riusa identica con un altro runtime.
 Oggi usa il modello **pubblico COCO**, classe 19 = cow. Con il nostro modello:
-`--model nostro.onnx --class-id 0`, purché sia esportato da ultralytics come YOLOv8/11.
+`--model nostro.onnx --class-id 0`, purché sia esportato da ultralytics come YOLOv8/11
+(`tools/export_model.sh best.pt`). Se `--class-id` non esiste nel modello, il programma
+si ferma con un errore invece di contare 0.
 
 **Tracker.** `IouTracker`: abbina le box tra frame per sovrapposizione (IoU) con previsione
 a velocità costante (stile SORT senza Kalman). Una traccia riceve un id dopo `min_hits`
@@ -82,7 +93,8 @@ cmake --build edge/build && ctest --test-dir edge/build --output-on-failure
   padding, NMS), e pipeline tracker + detector **simulato** su 200 s a 3, 10 e 25 fps.
   Il detector simulato (`edge/tests/fake_detector.*`) esiste solo nei test.
 - `real_video`: modello vero sul video della mandria; fallisce se non trova nessuna mucca.
-  Si attiva solo se modello e video sono stati scaricati.
+- `wrong_class_id`: con una classe che il modello non ha, deve uscire con errore chiaro.
+  `real_video` e `wrong_class_id` si attivano solo se modello e video sono stati scaricati.
 
 ## Risultati sui video di prova (PC x86, 8 core)
 
@@ -104,8 +116,8 @@ cmake --build edge/build && ctest --test-dir edge/build --output-on-failure
   OpenCV di Debian è la 4.x: il codice usa solo API comuni a 4 e 5, da verificare compilando lì.
 - **Modello nostro**: addestrato su riprese della nostra camera, anche notturne. Poi
   `--class-id 0` e soglie da ritarare con `--debug-video`.
-- **Camera finale**: se dà solo MJPEG/H.264 serve un decoder (si può usare `--video` con
-  una pipeline GStreamer o un URL, oppure aggiungere il supporto MJPEG alla sorgente V4L2).
+- **Camera finale**: YUYV → `--camera`; MJPEG → `--video /dev/videoN`; H.264 o camera
+  CSI → `--video` con una pipeline GStreamer. Da provare sulla scheda con la camera vera.
 - **Conteggio**: oggi `unique_count` = animali diversi dall'avvio, riparte da 0 al riavvio.
   Da decidere se serve per finestra di tempo, per direzione (ingressi/uscite) o persistente.
   Con animali ammassati il tracker semplice può scambiare id: valutare ByteTrack su riprese vere.

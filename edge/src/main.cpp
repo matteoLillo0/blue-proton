@@ -50,12 +50,13 @@ struct Options {
 };
 
 void print_usage(const char* prog) {
-    std::cout << "Uso: " << prog << " (--camera <device> | --video <file>) [opzioni]\n"
+    std::cout << "Uso: " << prog << " (--camera <device> | --video <sorgente>) [opzioni]\n"
               << "Sorgente:\n"
-              << "  --camera <device>      camera V4L2, es. /dev/video0\n"
+              << "  --camera <device>      camera V4L2 in formato YUYV, es. /dev/video0\n"
               << "  --width <px> --height <px> --fps <n>   richiesta alla camera (default: 640x480 @ 10)\n"
-              << "  --video <file>         file video (o URL rtsp://)\n"
-              << "  --no-pace              con --video: il piu' veloce possibile invece che a velocita' reale\n"
+              << "  --video <sorgente>     file video, camera via OpenCV (es. /dev/video0, anche MJPEG),\n"
+              << "                         URL rtsp:// o pipeline GStreamer che finisce con \"! appsink\"\n"
+              << "  --no-pace              con --video da file: il piu' veloce possibile invece che a velocita' reale\n"
               << "Detector:\n"
               << "  --model <file.onnx>    modello YOLO (default: models/yolo11n_640.onnx)\n"
               << "  --model-size <px>      lato d'ingresso con cui e' stato esportato (default: 640)\n"
@@ -116,7 +117,7 @@ bool parse_args(int argc, char** argv, Options& opt) {
         }
     }
     const bool one_source = opt.camera.empty() != opt.video.empty();
-    return one_source && opt.width > 0 && opt.height > 0 && opt.fps > 0.0 && opt.yolo.conf_threshold >= 0.0F &&
+    return one_source && opt.yolo.model_class_id >= 0 && opt.width > 0 && opt.height > 0 && opt.fps > 0.0 && opt.yolo.conf_threshold >= 0.0F &&
            opt.yolo.conf_threshold <= 1.0F;
 }
 
@@ -136,9 +137,10 @@ bool save_ppm(const bp::Frame& frame, const std::string& path) {
 // Crea la sorgente scelta e ne restituisce gli fps nominali in `fps_out`.
 std::unique_ptr<bp::FrameSource> make_source(const Options& opt, double& fps_out) {
     if (!opt.video.empty()) {
-        auto vid = std::make_unique<bp::OpenCvVideoSource>(opt.video, opt.pace);
+        auto vid = std::make_unique<bp::OpenCvVideoSource>(
+            opt.video, opt.pace, bp::CameraRequest{opt.width, opt.height, opt.fps});
         std::cout << "Video " << opt.video << ": " << vid->width() << 'x' << vid->height() << " @ " << vid->fps()
-                  << " fps" << (opt.pace ? "" : " (senza pacing)") << '\n';
+                  << " fps" << (vid->live() ? " (dal vivo)" : opt.pace ? "" : " (senza pacing)") << '\n';
         fps_out = vid->fps();
         return vid;
     }

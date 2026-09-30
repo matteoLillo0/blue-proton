@@ -62,4 +62,9 @@ if(EXISTS "${BP_MODEL}" AND EXISTS "${BP_TEST_VIDEO}")
     COMMAND blue_proton_edge --video "${BP_TEST_VIDEO}" --no-pace --model "${BP_MODEL}" --status-file real_video_status.json)
   # Deve trovare almeno una mucca: se il detector o la riconversione delle box si rompono, fallisce.
   set_tests_properties(real_video PROPERTIES FAIL_REGULAR_EXPRESSION "animali unici 0\n")
+  # Una classe che il modello non ha deve dare un errore chiaro, non un conteggio fermo a 0.
+  add_test(NAME wrong_class_id
+    COMMAND blue_proton_edge --video "${BP_TEST_VIDEO}" --no-pace --model "${BP_MODEL}" --class-id 80
+            --status-file wrong_class_status.json)
+  set_tests_properties(wrong_class_id PROPERTIES PASS_REGULAR_EXPRESSION "--class-id 80 non esiste")
 endif()

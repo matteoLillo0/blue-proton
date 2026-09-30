@@ -58,6 +58,13 @@ che modifichi il codice.
 ./edge/build/blue_proton_edge --camera /dev/video0
 ```
 
+Se la camera dà errore `la camera non supporta YUYV`, oppure va lenta ad alta risoluzione,
+usa `--video` al posto di `--camera` (legge anche il formato MJPEG delle webcam):
+
+```sh
+./edge/build/blue_proton_edge --video /dev/video0 --width 1280 --height 720 --fps 30
+```
+
 Per fermarlo premi **Ctrl+C**. Mentre gira vedi una riga al secondo:
 
 ```
@@ -99,15 +106,22 @@ Se lanci il programma senza opzioni, stampa l'elenco completo.
 
 ## 6. Con il vostro modello (quando sarà pronto)
 
+Il modello deve essere un YOLOv8 o YOLO11 addestrato con ultralytics. Dall'addestramento
+esce un file di pesi, di solito `runs/detect/train/weights/best.pt`. Convertilo così:
+
 ```sh
-./edge/build/blue_proton_edge --camera /dev/video0 \
-    --model models/nostro.onnx --model-size 640 --class-id 0
+tools/export_model.sh percorso/best.pt 320   # crea models/best_320.onnx
 ```
 
-Il modello deve essere un YOLOv8 o YOLO11 esportato in ONNX da ultralytics.
+Poi lancialo:
 
-⚠️ **Non dimenticare `--class-id 0`.** Senza, il programma cerca la classe 19 (la "mucca" del
-modello pubblico COCO), non trova nulla e il conteggio resta a 0 **senza dare errori**.
+```sh
+./edge/build/blue_proton_edge --camera /dev/video0 \
+    --model models/best_320.onnx --model-size 320 --class-id 0
+```
+
+`--class-id 0` serve se il modello conosce una sola classe (la mucca). Se lo dimentichi, il
+programma si ferma con un errore che te lo ricorda.
 
 ## 7. Controllare che funzioni tutto
 
@@ -123,6 +137,7 @@ Se alla fine leggi `100% tests passed`, è tutto a posto.
 |---|---|
 | `modello non trovato` | lancia `tools/export_model.sh` |
 | `--model-size corrisponde al modello?` | il numero di `--model-size` non è quello del modello |
-| `la camera non supporta YUYV` | la camera dà solo altri formati (es. MJPEG), non ancora supportati: controlla con `v4l2-ctl -d /dev/video0 --list-formats-ext` |
+| `la camera non supporta YUYV` | usa `--video /dev/video0` al posto di `--camera` (formati della camera: `v4l2-ctl -d /dev/video0 --list-formats-ext`) |
+| `--class-id N non esiste` | il modello non ha quella classe: con il vostro modello usa `--class-id 0` |
 | `impossibile aprire la camera` | la camera non è collegata, oppure è su un altro `/dev/videoN` (lancia `ls /dev/video*`) |
-| `count` sempre 0 | controlla `--class-id`, oppure prova ad abbassare `--conf` |
+| `count` sempre 0 | prova ad abbassare `--conf`, e guarda il `--debug-video` |

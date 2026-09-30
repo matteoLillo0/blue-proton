@@ -80,6 +80,14 @@ std::vector<Detection> OpenCvYoloDetector::detect(const Frame& frame) {
     }
     const int channels = out.size[1];
     const int anchors = out.size[2];
+    const int classes = channels - 4;
+    if (params_.model_class_id >= classes) {
+        // Senza questo controllo decode_yolo restituirebbe zero box: conteggio fermo a 0 senza errori.
+        throw std::runtime_error("il modello ha " + std::to_string(classes) + " classi (0.." +
+                                 std::to_string(classes - 1) + "), --class-id " +
+                                 std::to_string(params_.model_class_id) +
+                                 " non esiste (con un modello a classe unica usa --class-id 0)");
+    }
     if (anchors != yolo_expected_anchors(input_size_)) {
         throw std::runtime_error("il modello non e' stato esportato a " + std::to_string(input_size_) +
                                  " px: controlla --model-size");
